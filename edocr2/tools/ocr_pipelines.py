@@ -280,7 +280,8 @@ class Pipeline:
                 
                 box = template_matching(img_, cnts, folder_path, self.matching_t, angle, xy2, rotate)
                 
-                if box:
+                # FIX: Use "is not None" instead of boolean check on numpy array
+                if box is not None:
                     pts=np.array([(box[0]),(box[1]),(box[2]),(box[3])]).astype(np.int64)
                     mask_img = cv2.polylines(mask_img, [pts], isClosed=True, color=(0, 255, 0), thickness=2)
                     poly2 = Polygon(box)
@@ -382,8 +383,8 @@ class Pipeline:
     def dimension_criteria(self, img):
         pred_nor = self.ocr_the_rest(img, 'nor') #Norwegian include a char for the o-slash (Ø and ø) Convinient for the diameter recognition ⌀
         pred_eng = self.ocr_the_rest(img, 'eng') #However, its performance is worse than english, can't trust it
-        allowed_exceptions_nor = set('''-.»Ø,/!«Æ()Å:'"[];|“?Ö=*Ä”&É<>+$£%—€øåæöéIZNOoPXiLlk \n''')
-        allowed_exceptions_eng = set('''?—!@#~;¢«#_%\&€$»[é]®§¥©‘™="~'£<*“”I|ZNOXiLlk \n''')
+        allowed_exceptions_nor = set('''-.»Ø,/!«Æ()Å:'"[];|"?Ö=*Ä"&É<>+$£%—€øåæöéIZNOoPXiLlk \n''')
+        allowed_exceptions_eng = set('''?—!@#~;¢«#_%\&€$»[é]®§¥©'™="~'£<*""I|ZNOXiLlk \n''')
         ok_nor = all(char in set(self.alphabet_dimensions) or char in allowed_exceptions_nor for char in pred_nor)
         ok_eng = all(char in set(self.alphabet_dimensions) or char in allowed_exceptions_eng for char in pred_eng)
         if ok_nor or ok_eng or len(pred_eng) < 2 or len(pred_nor) < 2:
@@ -717,6 +718,9 @@ def find_outliers(counts, t):
                 std = np.std(counts)
 
                 # Calculate Z-scores
+                # FIX: Handle division by zero when std is 0
+                if std == 0:
+                    return np.array([])
                 z_scores = (counts - mean) / std
 
                 # Identify outliers

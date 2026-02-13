@@ -9,17 +9,29 @@ class Pipeline:
 
     Args:
         detector: The detector to use
-        recognizer: The recognizer to use
+        recognizer: The recognizer to use. Can be:
+                    - recognition.Recognizer (CRNN, original)
+                    - recognition_trocr.TrOCRRecognizer (transformer, new)
+                    - None (auto-creates CRNN recognizer)
+        recognizer_backend: 'crnn' or 'trocr'. If set, overrides recognizer arg.
+        trocr_model_path: Path to fine-tuned TrOCR model (for trocr backend).
         scale: The scale factor to apply to input images
-        max_size: The maximum single-side dimension of images for
-            inference.
+        max_size: The maximum single-side dimension of images for inference.
     """
 
-    def __init__(self, detector=None, recognizer=None, scale=2, max_size=2048):
+    def __init__(self, detector=None, recognizer=None, scale=2, max_size=2048,
+                 recognizer_backend=None, trocr_model_path=None):
         if detector is None:
             detector = detection.Detector()
-        if recognizer is None:
+
+        if recognizer_backend == 'trocr' or trocr_model_path is not None:
+            from . import recognition_trocr
+            recognizer = recognition_trocr.TrOCRRecognizer(
+                model_path=trocr_model_path
+            )
+        elif recognizer is None:
             recognizer = recognition.Recognizer()
+
         self.scale = scale
         self.detector = detector
         self.recognizer = recognizer
@@ -29,7 +41,7 @@ class Pipeline:
         """Run the pipeline on one or multiples images.
 
         Args:
-            images: The images to parse (can be a list of actual images or a list of filepaths)
+            images: The images to parse (list of images or filepaths)
             detection_kwargs: Arguments to pass to the detector call
             recognition_kwargs: Arguments to pass to the recognizer call
 

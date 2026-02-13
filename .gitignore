@@ -8,3 +8,16 @@
 /washers_results/
 /tests/4132864.jpg
 /__pycache__/
+models/
+output/
+results/
+uploads/
+synth_data/
+gdt_preview/
+*.png
+*.json
+*.sh
+Anaconda3-*
+__pycache__/
+*.pyc
+monenv/

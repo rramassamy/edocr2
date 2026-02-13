@@ -881,3 +881,143 @@ def ocr_dimensions(img, detector, recognizer, alphabet_dim, frame, dim_boxes = [
         cv2.imwrite(image_filename, img)
         
     return dimensions, other_info, img, dim_pyt
+
+
+def detect_dimensions(img, detector, frame, dim_boxes=[], cluster_thres=20, language='eng', max_img_size=2048):
+    """
+    CRAFT detection only — no CRNN recognition.
+    Returns bounding boxes + cropped images for TrOCR to recognize externally.
+    
+    Args:
+        img: cropped frame image (BGR)
+        detector: CRAFT detector instance
+        frame: frame object with x, y, w, h
+        dim_boxes: pre-detected dimension boxes
+        cluster_thres: clustering threshold for grouping nearby boxes
+        language: OCR language (unused here, kept for API compat)
+        max_img_size: max image size for CRAFT detector
+    
+    Returns:
+        detected_boxes: list of dicts with keys:
+            - 'box': np.array of 4 corner points in frame-relative coords
+            - 'crop': cropped & cleaned BGR image ready for OCR
+            - 'box_abs': box in absolute (original image) coords
+        other_crops: list of dicts for text regions that look like notes (not dimensions)
+        img: processed image with detected areas masked white
+    """
+    detected_boxes = []
+    other_crops = []
+    
+    # 1. Process pre-detected dim_boxes
+    for d in dim_boxes:
+        x, y = d.x - frame.x, d.y - frame.y
+        if x < 0 or y < 0:
+            continue
+        if x + d.w > img.shape[1] or y + d.h > img.shape[0]:
+            continue
+        
+        roi = img[y + 2:y + d.h - 4, x + 2:x + d.w - 4]
+        if roi.size == 0 or roi.shape[0] < 5 or roi.shape[1] < 5:
+            continue
+        
+        if d.h > d.w:
+            roi = cv2.rotate(roi, cv2.ROTATE_90_CLOCKWISE)
+        
+        box = np.array([[x, y], [x + d.w, y], [x + d.w, y + d.h], [x, y + d.h]])
+        box_abs = box.copy()
+        box_abs[:, 0] += frame.x
+        box_abs[:, 1] += frame.y
+        
+        detected_boxes.append({
+            'box': box,
+            'crop': roi,
+            'box_abs': box_abs,
+        })
+        img[y:y + d.h, x:x + d.w] = 255
+    
+    # 2. CRAFT detection via patches (same logic as Pipeline.ocr_img_patches)
+    # Build a lightweight pipeline just for detection
+    pipeline = Pipeline(
+        recognizer=None,
+        detector=detector,
+        alphabet_dimensions='',
+        cluster_t=cluster_thres,
+        max_size=max_img_size,
+        language=language
+    )
+    
+    patches = (int(img.shape[1] / pipeline.max_size + 2), int(img.shape[0] / pipeline.max_size + 2))
+    ol = 0.05
+    a_x = int((1 - ol) / (patches[0]) * img.shape[1])
+    b_x = a_x + int(ol * img.shape[1])
+    a_y = int((1 - ol) / (patches[1]) * img.shape[0])
+    b_y = a_y + int(ol * img.shape[0])
+    
+    all_boxes = []
+    for i in range(patches[0]):
+        for j in range(patches[1]):
+            offset = (a_x * i, a_y * j)
+            patch_boundary = (i * a_x + b_x, j * a_y + b_y)
+            img_patch = img[offset[1]:patch_boundary[1], offset[0]:patch_boundary[0]]
+            if img_not_empty(img_patch, 100):
+                box_group = pipeline.detect(img_patch)
+                for b in box_group:
+                    for xy in b:
+                        xy = xy + offset
+                        all_boxes.append(xy)
+    
+    if all_boxes:
+        all_boxes = group_polygons_by_proximity(all_boxes, eps=cluster_thres)
+        all_boxes = group_polygons_by_proximity(all_boxes, eps=cluster_thres - 5)
+    
+    print(f'[DETECT] {len(all_boxes)} text regions detected by CRAFT')
+    
+    # 3. Extract crops, classify dimension vs other
+    for box in all_boxes:
+        try:
+            box_np = np.int32(box)
+            img_cropped, cnts, angle = postprocess_detection(img, box_np)
+            
+            if img_cropped is None or img_cropped.size == 0:
+                continue
+            if img_cropped.shape[0] < 5 or img_cropped.shape[1] < 5:
+                continue
+            
+            box_abs = box_np.copy()
+            box_abs[:, 0] += frame.x
+            box_abs[:, 1] += frame.y
+            
+            # Use dimension_criteria to classify (uses pytesseract heuristic)
+            try:
+                pytess_img = cv2.copyMakeBorder(img_cropped, 
+                    int(img_cropped.shape[0] * 0.3), int(img_cropped.shape[0] * 0.3),
+                    int(img_cropped.shape[1] * 0.3), int(img_cropped.shape[1] * 0.3),
+                    cv2.BORDER_CONSTANT, value=[255, 255, 255])
+                is_dimension = pipeline.dimension_criteria(pytess_img)
+            except Exception:
+                is_dimension = True  # Default to dimension if check fails
+            
+            entry = {
+                'box': box_np,
+                'crop': img_cropped,
+                'box_abs': box_abs,
+            }
+            
+            if is_dimension:
+                detected_boxes.append(entry)
+            else:
+                other_crops.append(entry)
+                
+        except Exception as e:
+            print(f'[DETECT] Error processing box: {e}')
+            continue
+    
+    # 4. Mask all detected areas
+    for entry in detected_boxes + other_crops:
+        box = entry['box']
+        pts = np.array([box[0], box[1], box[2], box[3]])
+        cv2.fillPoly(img, [pts], (255, 255, 255))
+    
+    print(f'[DETECT] {len(detected_boxes)} dimensions, {len(other_crops)} other text regions')
+    
+    return detected_boxes, other_crops, img
